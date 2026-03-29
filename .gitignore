@@ -1,0 +1,6 @@
+bin/
+obj/
+packaging/stage/
+*.yak
+*.user
+.DS_Store
