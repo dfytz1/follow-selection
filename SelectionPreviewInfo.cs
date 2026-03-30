@@ -11,7 +11,7 @@ namespace SelectionPreview
     public override Bitmap Icon => SelectionPreviewIcons.AssemblyIcon;
 
     public override string Description =>
-      "Grasshopper canvas toolbar toggle: while enabled, selected objects keep viewport preview visible until deselected (restores prior Hidden).";
+      "Grasshopper canvas toolbar toggle: while enabled, selected hidden objects still draw in the Rhino viewport without changing Preview On/Off (safe for copy/paste).";
 
     public override Guid Id => new Guid("B4C3D2E1-F0A9-8B7C-6D5E-4F3A2B1C0D9E");
 

@@ -4,16 +4,15 @@ using Grasshopper.Kernel;
 using System;
 using System.Collections.Generic;
 using System.Drawing;
-using System.Linq;
 using System.Windows.Forms;
 
 namespace SelectionPreview
 {
   /// <summary>
-  /// Adds a toolbar toggle: while enabled, selected <see cref="IGH_PreviewObject"/> instances
-  /// are forced visible; on deselect, original <see cref="IGH_PreviewObject.Hidden"/> is restored.
-  /// Selection is tracked via <see cref="GH_Canvas.CanvasPostPaintObjects"/> and a per-document
-  /// <see cref="HashSet{Guid}"/> diff (no public selection-changed event in GH).
+  /// Toolbar toggle: while enabled, selected <see cref="IGH_PreviewObject"/> instances that are
+  /// <see cref="IGH_PreviewObject.Hidden"/> still draw in the Rhino viewport (Grasshopper normally
+  /// skips them when preview filter is <see cref="GH_PreviewFilter.None"/>). <c>Hidden</c> is never
+  /// modified, so copy/paste and Preview On/Off behave normally.
   /// </summary>
   public class SelectionPreviewPriority : GH_AssemblyPriority
   {
@@ -22,15 +21,8 @@ namespace SelectionPreview
 
     private static bool _featureEnabled;
     private static ToolStripButton? _toolButton;
-    private static bool _pendingRefresh;
     private static bool _toolbarRegistered;
     private static bool _toolbarRegisterPending;
-
-    /// <summary>Per-document: GUID → original Hidden before we forced show.</summary>
-    private static readonly Dictionary<GH_Document, Dictionary<Guid, bool>> SavedHiddenByDoc = new();
-
-    /// <summary>Per-document: last frame's selected object GUIDs.</summary>
-    private static readonly Dictionary<GH_Document, HashSet<Guid>> LastSelectionByDoc = new();
 
     private static readonly HashSet<GH_Canvas> HookedCanvases = new();
 
@@ -47,10 +39,6 @@ namespace SelectionPreview
     private static void HookCanvas(GH_Canvas? canvas)
     {
       if (canvas == null || !HookedCanvases.Add(canvas)) return;
-
-      canvas.CanvasPostPaintObjects += OnCanvasPostPaint;
-      canvas.DocumentChanged       += OnDocumentChanged;
-
       EnsureToolbarOnEditor();
     }
 
@@ -98,10 +86,6 @@ namespace SelectionPreview
       }
     }
 
-    /// <summary>
-    /// Returns the index at which to insert our button (after the built-in preview cluster), or -1 if no anchor matched.
-    /// Names are not public API and may differ by Grasshopper version; <see cref="ToolStripItemAlignment.Right"/> is the real fallback.
-    /// </summary>
     private static int FindPreviewClusterInsertIndex(ToolStrip toolbar)
     {
       var lastAnchor = -1;
@@ -121,7 +105,6 @@ namespace SelectionPreview
       return lastAnchor >= 0 ? lastAnchor + 1 : -1;
     }
 
-    /// <summary>Known canvas-toolbar item names for the preview/display cluster (best-effort).</summary>
     private static readonly string[] PreviewClusterAnchorNames =
     {
       "PreviewMeshButton",
@@ -153,7 +136,7 @@ namespace SelectionPreview
       _toolButton = new ToolStripButton
       {
         Name          = ButtonName,
-        ToolTipText   = "Follow selection — show viewport preview while selected; restore Hidden when deselected.",
+        ToolTipText   = "Follow selection — show viewport preview for selected hidden objects (does not change Preview On/Off).",
         DisplayStyle  = ToolStripItemDisplayStyle.Image,
         Image         = SelectionPreviewIcons.MakeIcon(_featureEnabled),
         CheckOnClick  = false,
@@ -199,7 +182,6 @@ namespace SelectionPreview
       _toolButton.Invalidate();
       toolbar.Invalidate();
 
-      // One deferred pass: fixes cases where the strip hasn't laid out handles yet on first registration.
       editor.BeginInvoke(new Action(() =>
       {
         if (_toolButton == null || _toolButton.IsDisposed) return;
@@ -210,12 +192,18 @@ namespace SelectionPreview
         toolbar.Invalidate();
       }));
 
+      FollowSelectionViewportConduit.Instance.Enabled = _featureEnabled;
+      FollowSelectionViewportConduit.FeatureEnabled   = _featureEnabled;
+
       return true;
     }
 
     private static void ToggleFeature()
     {
       _featureEnabled = !_featureEnabled;
+      FollowSelectionViewportConduit.FeatureEnabled   = _featureEnabled;
+      FollowSelectionViewportConduit.Instance.Enabled = _featureEnabled;
+
       if (_toolButton != null)
       {
         _toolButton.Checked = _featureEnabled;
@@ -224,138 +212,8 @@ namespace SelectionPreview
         old?.Dispose();
       }
 
-      if (!_featureEnabled)
-      {
-        _pendingRefresh = false;
-        foreach (var doc in SavedHiddenByDoc.Keys.ToList())
-          RestoreAll(doc);
-        SavedHiddenByDoc.Clear();
-        LastSelectionByDoc.Clear();
-        Instances.ActiveCanvas?.Document?.NewSolution(false);
-        Instances.ActiveCanvas?.Refresh();
-      }
-    }
-
-    private static Dictionary<Guid, bool> GetSaved(GH_Document doc)
-    {
-      if (!SavedHiddenByDoc.TryGetValue(doc, out var map))
-      {
-        map = new Dictionary<Guid, bool>();
-        SavedHiddenByDoc[doc] = map;
-      }
-      return map;
-    }
-
-    private static HashSet<Guid> GetLastSel(GH_Document doc)
-    {
-      if (!LastSelectionByDoc.TryGetValue(doc, out var set))
-      {
-        set = new HashSet<Guid>();
-        LastSelectionByDoc[doc] = set;
-      }
-      return set;
-    }
-
-    private static void OnCanvasPostPaint(GH_Canvas sender)
-    {
-      if (!_toolbarRegistered)
-        EnsureToolbarOnEditor();
-
-      if (!_featureEnabled || _pendingRefresh) return;
-
-      var doc = sender.Document;
-      if (doc == null) return;
-
-      var current = new HashSet<Guid>();
-      foreach (var obj in doc.Objects)
-      {
-        if (obj.Attributes.Selected)
-          current.Add(obj.InstanceGuid);
-      }
-
-      var lastSelection = GetLastSel(doc);
-      if (current.SetEquals(lastSelection)) return;
-
-      var savedHidden = GetSaved(doc);
-      var dirty       = false;
-
-      // Newly deselected → restore saved Hidden (or drop stale entry if object gone)
-      foreach (var id in lastSelection)
-      {
-        if (current.Contains(id)) continue;
-
-        if (!savedHidden.TryGetValue(id, out var wasHidden))
-          continue;
-
-        savedHidden.Remove(id);
-        var obj = doc.FindObject(id, false);
-        if (obj is IGH_PreviewObject pObj)
-        {
-          pObj.Hidden = wasHidden;
-          dirty       = true;
-        }
-      }
-
-      // Newly selected → remember Hidden, force show
-      foreach (var id in current)
-      {
-        if (lastSelection.Contains(id)) continue;
-
-        var obj = doc.FindObject(id, false);
-        if (obj is not IGH_PreviewObject pObj) continue;
-
-        if (!savedHidden.ContainsKey(id))
-          savedHidden[id] = pObj.Hidden;
-
-        if (pObj.Hidden)
-        {
-          pObj.Hidden = false;
-          dirty       = true;
-        }
-      }
-
-      lastSelection.Clear();
-      foreach (var g in current) lastSelection.Add(g);
-
-      if (dirty)
-      {
-        _pendingRefresh = true;
-        sender.BeginInvoke(new Action(() =>
-        {
-          _pendingRefresh = false;
-          Instances.ActiveCanvas?.Document?.NewSolution(false);
-        }));
-      }
-    }
-
-    private static void OnDocumentChanged(GH_Canvas sender, GH_CanvasDocumentChangedEventArgs e)
-    {
-      if (e.OldDocument != null)
-      {
-        RestoreAll(e.OldDocument);
-        SavedHiddenByDoc.Remove(e.OldDocument);
-        LastSelectionByDoc.Remove(e.OldDocument);
-      }
-    }
-
-    private static void RestoreAll(GH_Document? doc)
-    {
-      if (doc == null)
-      {
-        SavedHiddenByDoc.Clear();
-        return;
-      }
-
-      if (!SavedHiddenByDoc.TryGetValue(doc, out var map)) return;
-
-      foreach (var kvp in map)
-      {
-        var obj = doc.FindObject(kvp.Key, false);
-        if (obj is IGH_PreviewObject pObj)
-          pObj.Hidden = kvp.Value;
-      }
-
-      map.Clear();
+      Rhino.RhinoDoc.ActiveDoc?.Views.Redraw();
+      Instances.ActiveCanvas?.Refresh();
     }
   }
 }
