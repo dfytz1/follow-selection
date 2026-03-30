@@ -80,7 +80,11 @@ namespace SelectionPreview
       }
     }
 
-    protected override void DrawForeground(DrawEventArgs e)
+    /// <summary>
+    /// Draw here — not <see cref="DrawForeground"/> — so depth testing stays on and Rhino geometry
+    /// in front of the preview occludes it (DrawForeground disables depth test and paints on top).
+    /// </summary>
+    protected override void PostDrawObjects(DrawEventArgs e)
     {
       if (!FeatureEnabled || PreviewArgsCtor == null)
         return;
