@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Reflection;
-using System.Runtime.CompilerServices;
 using Grasshopper;
 using Grasshopper.Kernel;
 using Grasshopper.Kernel.Types;
@@ -31,21 +30,6 @@ namespace SelectionPreview
         typeof(Color), typeof(Color), typeof(DisplayMaterial), typeof(DisplayMaterial), typeof(MeshingParameters),
       },
       null);
-
-    /// <summary>Per <see cref="GH_Document"/> cache: preview colours → face materials; mesh type/custom → meshing params.</summary>
-    private sealed class FollowPreviewCache
-    {
-      internal int PreviewArgb;
-      internal int PreviewSelArgb;
-      internal DisplayMaterial? Face;
-      internal DisplayMaterial? FaceSel;
-
-      internal GH_PreviewMesh MeshType;
-      internal MeshingParameters? CustomMeshSnap;
-      internal MeshingParameters? MeshCopy;
-    }
-
-    private static readonly ConditionalWeakTable<GH_Document, FollowPreviewCache> PreviewCaches = new();
 
     private FollowSelectionViewportConduit()
     {
@@ -211,94 +195,20 @@ namespace SelectionPreview
 
     private static IGH_PreviewArgs CreatePreviewArgs(GH_Document ghDoc, DrawEventArgs e, bool forSelectedWires)
     {
-      var cache = PreviewCaches.GetValue(ghDoc, _ => new FollowPreviewCache());
-      EnsureFaceMaterials(ghDoc, cache);
-      var meshParams = GetCachedMeshingParameters(ghDoc, cache);
-
+      var meshParams = ghDoc.PreviewCurrentMeshParameters() ?? MeshingParameters.Default;
       var wire = Color.FromArgb(ghDoc.PreviewColour.R, ghDoc.PreviewColour.G, ghDoc.PreviewColour.B);
       var wireSel =
         Color.FromArgb(ghDoc.PreviewColourSelected.R, ghDoc.PreviewColourSelected.G, ghDoc.PreviewColourSelected.B);
+      var face = GH_Material.CreateStandardMaterial(ghDoc.PreviewColour);
+      var faceSel = GH_Material.CreateStandardMaterial(ghDoc.PreviewColourSelected);
       var defaultThickness = e.Display.DefaultCurveThickness;
       var thickThickness = defaultThickness + CentralSettings.PreviewSelectionThickening;
       var thickness = forSelectedWires ? thickThickness : defaultThickness;
 
       return (IGH_PreviewArgs)PreviewArgsCtor!.Invoke(new object[]
       {
-        ghDoc, e.Display, e.Viewport, thickness, wire, wireSel, cache.Face!, cache.FaceSel!, meshParams,
+        ghDoc, e.Display, e.Viewport, thickness, wire, wireSel, face, faceSel, meshParams,
       });
-    }
-
-    private static void EnsureFaceMaterials(GH_Document ghDoc, FollowPreviewCache cache)
-    {
-      var p = Color.FromArgb(ghDoc.PreviewColour.R, ghDoc.PreviewColour.G, ghDoc.PreviewColour.B).ToArgb();
-      var s = Color
-        .FromArgb(ghDoc.PreviewColourSelected.R, ghDoc.PreviewColourSelected.G, ghDoc.PreviewColourSelected.B)
-        .ToArgb();
-      if (cache.Face != null && cache.PreviewArgb == p && cache.PreviewSelArgb == s)
-        return;
-
-      cache.Face?.Dispose();
-      cache.FaceSel?.Dispose();
-      cache.Face = GH_Material.CreateStandardMaterial(ghDoc.PreviewColour);
-      cache.FaceSel = GH_Material.CreateStandardMaterial(ghDoc.PreviewColourSelected);
-      cache.PreviewArgb = p;
-      cache.PreviewSelArgb = s;
-    }
-
-    private static bool CustomMeshMatches(MeshingParameters? cached, MeshingParameters? live) =>
-      (cached == null && live == null) || (cached != null && live != null && cached.Equals(live));
-
-    private static void DisposeIfNotDefault(MeshingParameters? mp)
-    {
-      if (mp != null && !ReferenceEquals(mp, MeshingParameters.Default))
-        mp.Dispose();
-    }
-
-    /// <summary>
-    /// Reuses mesh parameters per document. Skips <see cref="GH_Document.PreviewCurrentMeshParameters"/> when
-    /// <see cref="GH_Document.PreviewMeshType"/> and custom settings are unchanged; for <see cref="GH_PreviewMesh.Document"/>,
-    /// still queries each frame but keeps a copy when values are equal.
-    /// </summary>
-    private static MeshingParameters GetCachedMeshingParameters(GH_Document ghDoc, FollowPreviewCache cache)
-    {
-      var type = ghDoc.PreviewMeshType;
-      var customLive = type == GH_PreviewMesh.Custom ? ghDoc.PreviewCustomMeshParameters : null;
-
-      var structuralChange = cache.MeshCopy == null
-        || cache.MeshType != type
-        || (type == GH_PreviewMesh.Custom && !CustomMeshMatches(cache.CustomMeshSnap, customLive));
-
-      if (structuralChange)
-      {
-        cache.MeshCopy?.Dispose();
-        cache.CustomMeshSnap?.Dispose();
-        cache.CustomMeshSnap = null;
-
-        var live = ghDoc.PreviewCurrentMeshParameters() ?? MeshingParameters.Default;
-        cache.MeshCopy = new MeshingParameters(live);
-        DisposeIfNotDefault(live);
-        cache.MeshType = type;
-        if (type == GH_PreviewMesh.Custom && customLive != null)
-          cache.CustomMeshSnap = new MeshingParameters(customLive);
-        return cache.MeshCopy;
-      }
-
-      if (type == GH_PreviewMesh.Document)
-      {
-        var live = ghDoc.PreviewCurrentMeshParameters() ?? MeshingParameters.Default;
-        if (cache.MeshCopy!.Equals(live))
-        {
-          DisposeIfNotDefault(live);
-          return cache.MeshCopy;
-        }
-
-        cache.MeshCopy.Dispose();
-        cache.MeshCopy = new MeshingParameters(live);
-        DisposeIfNotDefault(live);
-        return cache.MeshCopy;
-      }
-
-      return cache.MeshCopy!;
     }
   }
 }
