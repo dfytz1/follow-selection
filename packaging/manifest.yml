@@ -1,13 +1,13 @@
 name: follow-selection
-version: 1.1.6
+version: 1.1.7
 authors:
   - GIA
 description: >
   Follow selection — Grasshopper canvas toolbar toggle. While enabled, selected components and
   parameters that have preview off still draw in the Rhino viewport via a display conduit, without
-  changing Preview On/Off or breaking copy/paste. v1.1.6: follow-selection uses the active cluster
-  edit document (correct selection and preview colours inside clusters). v1.1.5: toolbar button
-  re-registers when the Grasshopper editor is reopened.
+  changing Preview On/Off or breaking copy/paste. v1.1.7: detect cluster editing via
+  GH_Document.Owner so the parent cluster selection no longer bleeds through with main-document
+  preview settings. v1.1.6: follow-selection uses the active cluster edit document.
 url: "https://github.com/dfytz1/follow-selection"
 icon: icon.png
 keywords:

@@ -133,17 +133,20 @@ namespace SelectionPreview
     /// Documents whose selected/hidden objects should be drawn for <paramref name="rhinoDoc"/>.
     /// <para>
     /// Editing a cluster loads a separate subsidiary document onto the canvas (see McNeel's cluster
-    /// docs). That document is where the live selection and preview colours live, and it is NOT bound
-    /// to the Rhino file (<see cref="GH_Document.RhinoDocument"/> is null) nor reliably on the document
-    /// server. While such a document is being edited the user's selection context is entirely inside
-    /// it, so we draw only that document — using its own preview settings — and skip the parent.
+    /// docs), and <see cref="GH_Canvas.Document"/> points at it while editing. A subsidiary document is
+    /// identified by a non-null <see cref="GH_Document.Owner"/> (the owning cluster). The cluster object
+    /// stays selected + hidden in the parent document the whole time, so if we drew the parent we'd keep
+    /// previewing the whole cluster with the parent's settings. Instead, while a cluster document is open
+    /// we draw ONLY that document — using its own selection state and preview colours — and skip the
+    /// parent entirely. (Its <see cref="GH_Document.RhinoDocument"/> is non-null, so it cannot be
+    /// distinguished by that; the ownership link is the reliable signal.)
     /// </para>
     /// Otherwise we fall back to the normal case: every server document bound to this Rhino file.
     /// </summary>
     private static IEnumerable<GH_Document> FollowSelectionDocuments(Rhino.RhinoDoc rhinoDoc)
     {
       var active = Instances.ActiveCanvas?.Document;
-      if (active != null && active.RhinoDocument == null)
+      if (active != null && active.Owner != null)
       {
         yield return active;
         yield break;
