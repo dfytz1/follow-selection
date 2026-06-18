@@ -4,6 +4,7 @@ using System.Drawing;
 using System.Reflection;
 using Grasshopper;
 using Grasshopper.Kernel;
+using Grasshopper.Kernel.Special;
 using Grasshopper.Kernel.Types;
 using Rhino.Display;
 using Rhino.Geometry;
@@ -69,13 +70,8 @@ namespace SelectionPreview
       if (ghDoc.PreviewMode == GH_PreviewMode.Disabled)
         return;
 
-      foreach (var obj in ghDoc.Objects)
+      foreach (var pObj in SelectedHiddenPreviewObjects(ghDoc))
       {
-        if (!obj.Attributes.Selected)
-          continue;
-        if (obj is not IGH_PreviewObject pObj || !pObj.IsPreviewCapable || !pObj.Hidden)
-          continue;
-
         var cb = pObj.ClippingBox;
         if (cb.IsValid)
           e.IncludeBoundingBox(cb);
@@ -154,13 +150,8 @@ namespace SelectionPreview
     private static void DrawMeshesForDocument(GH_Document ghDoc, DrawEventArgs e)
     {
       var args = CreatePreviewArgs(ghDoc, e, forSelectedWires: false);
-      foreach (var obj in ghDoc.Objects)
+      foreach (var pObj in SelectedHiddenPreviewObjects(ghDoc))
       {
-        if (!obj.Attributes.Selected)
-          continue;
-        if (obj is not IGH_PreviewObject pObj || !pObj.IsPreviewCapable || !pObj.Hidden)
-          continue;
-
         try
         {
           pObj.DrawViewportMeshes(args);
@@ -175,13 +166,8 @@ namespace SelectionPreview
     private static void DrawWiresForDocument(GH_Document ghDoc, DrawEventArgs e)
     {
       var argsSel = CreatePreviewArgs(ghDoc, e, forSelectedWires: true);
-      foreach (var obj in ghDoc.Objects)
+      foreach (var pObj in SelectedHiddenPreviewObjects(ghDoc))
       {
-        if (!obj.Attributes.Selected)
-          continue;
-        if (obj is not IGH_PreviewObject pObj || !pObj.IsPreviewCapable || !pObj.Hidden)
-          continue;
-
         try
         {
           pObj.DrawViewportWires(argsSel);
@@ -190,6 +176,45 @@ namespace SelectionPreview
         {
           /* ignore single-object preview failures */
         }
+      }
+    }
+
+    /// <summary>
+    /// Selected + hidden preview objects in <paramref name="ghDoc"/>, descending into nested
+    /// <see cref="GH_Cluster"/> sub-documents so objects selected while editing inside a cluster
+    /// (which live in the cluster's own document, not on the <see cref="GH_DocumentServer"/>) are
+    /// still picked up. Recurses through arbitrarily nested clusters.
+    /// </summary>
+    private static IEnumerable<IGH_PreviewObject> SelectedHiddenPreviewObjects(GH_Document ghDoc)
+    {
+      foreach (var obj in ghDoc.Objects)
+      {
+        if (obj is GH_Cluster cluster)
+        {
+          GH_Document? subDoc = null;
+          try
+          {
+            // Empty password returns the document for unlocked clusters; null for protected ones.
+            subDoc = cluster.Document(string.Empty);
+          }
+          catch
+          {
+            /* ignore inaccessible (e.g. password-protected) clusters */
+          }
+
+          if (subDoc != null)
+          {
+            foreach (var inner in SelectedHiddenPreviewObjects(subDoc))
+              yield return inner;
+          }
+        }
+
+        if (!obj.Attributes.Selected)
+          continue;
+        if (obj is not IGH_PreviewObject pObj || !pObj.IsPreviewCapable || !pObj.Hidden)
+          continue;
+
+        yield return pObj;
       }
     }
 
