@@ -4,7 +4,6 @@ using System.Drawing;
 using System.Reflection;
 using Grasshopper;
 using Grasshopper.Kernel;
-using Grasshopper.Kernel.Special;
 using Grasshopper.Kernel.Types;
 using Rhino.Display;
 using Rhino.Geometry;
@@ -53,7 +52,7 @@ namespace SelectionPreview
       if (rhinoDoc == null || rhinoDoc.IsHeadless)
         return;
 
-      foreach (var ghDoc in MatchingGrasshopperDocuments(rhinoDoc))
+      foreach (var ghDoc in FollowSelectionDocuments(rhinoDoc))
         IncludeFollowSelectionClipping(e, ghDoc);
     }
 
@@ -65,9 +64,7 @@ namespace SelectionPreview
 
     private static void IncludeFollowSelectionClipping(CalculateBoundingBoxEventArgs e, GH_Document ghDoc)
     {
-      if (ghDoc.PreviewFilter != GH_PreviewFilter.None)
-        return;
-      if (ghDoc.PreviewMode == GH_PreviewMode.Disabled)
+      if (!PreviewAllowed(ghDoc))
         return;
 
       foreach (var pObj in SelectedHiddenPreviewObjects(ghDoc))
@@ -90,10 +87,9 @@ namespace SelectionPreview
       if (rhinoDoc == null || rhinoDoc.IsHeadless)
         return;
 
-      for (var i = 0; i < Instances.DocumentServer.DocumentCount; i++)
+      foreach (var ghDoc in FollowSelectionDocuments(rhinoDoc))
       {
-        var ghDoc = Instances.DocumentServer[i];
-        if (!ShouldDrawFollowSelection(ghDoc, rhinoDoc))
+        if (!PreviewAllowed(ghDoc))
           continue;
         if (ghDoc.PreviewMode != GH_PreviewMode.Shaded)
           continue;
@@ -114,20 +110,18 @@ namespace SelectionPreview
       if (rhinoDoc == null || rhinoDoc.IsHeadless)
         return;
 
-      for (var i = 0; i < Instances.DocumentServer.DocumentCount; i++)
+      foreach (var ghDoc in FollowSelectionDocuments(rhinoDoc))
       {
-        var ghDoc = Instances.DocumentServer[i];
-        if (!ShouldDrawFollowSelection(ghDoc, rhinoDoc))
+        if (!PreviewAllowed(ghDoc))
           continue;
 
         DrawWiresForDocument(ghDoc, e);
       }
     }
 
-    private static bool ShouldDrawFollowSelection(GH_Document ghDoc, Rhino.RhinoDoc rhinoDoc)
+    /// <summary>Per-document preview gating (independent of which document we're drawing).</summary>
+    private static bool PreviewAllowed(GH_Document ghDoc)
     {
-      if (ghDoc.RhinoDocument != rhinoDoc)
-        return false;
       if (ghDoc.PreviewFilter != GH_PreviewFilter.None)
         return false;
       if (ghDoc.PreviewMode == GH_PreviewMode.Disabled)
@@ -135,9 +129,26 @@ namespace SelectionPreview
       return true;
     }
 
-    /// <summary>Documents on the server that belong to this Rhino file.</summary>
-    private static IEnumerable<GH_Document> MatchingGrasshopperDocuments(Rhino.RhinoDoc rhinoDoc)
+    /// <summary>
+    /// Documents whose selected/hidden objects should be drawn for <paramref name="rhinoDoc"/>.
+    /// <para>
+    /// Editing a cluster loads a separate subsidiary document onto the canvas (see McNeel's cluster
+    /// docs). That document is where the live selection and preview colours live, and it is NOT bound
+    /// to the Rhino file (<see cref="GH_Document.RhinoDocument"/> is null) nor reliably on the document
+    /// server. While such a document is being edited the user's selection context is entirely inside
+    /// it, so we draw only that document — using its own preview settings — and skip the parent.
+    /// </para>
+    /// Otherwise we fall back to the normal case: every server document bound to this Rhino file.
+    /// </summary>
+    private static IEnumerable<GH_Document> FollowSelectionDocuments(Rhino.RhinoDoc rhinoDoc)
     {
+      var active = Instances.ActiveCanvas?.Document;
+      if (active != null && active.RhinoDocument == null)
+      {
+        yield return active;
+        yield break;
+      }
+
       var server = Instances.DocumentServer;
       for (var i = 0; i < server.DocumentCount; i++)
       {
@@ -180,35 +191,15 @@ namespace SelectionPreview
     }
 
     /// <summary>
-    /// Selected + hidden preview objects in <paramref name="ghDoc"/>, descending into nested
-    /// <see cref="GH_Cluster"/> sub-documents so objects selected while editing inside a cluster
-    /// (which live in the cluster's own document, not on the <see cref="GH_DocumentServer"/>) are
-    /// still picked up. Recurses through arbitrarily nested clusters.
+    /// Selected + hidden preview objects in <paramref name="ghDoc"/>. When a cluster is being edited
+    /// this document is the cluster's subsidiary edit document, so a flat scan correctly picks up the
+    /// component you selected inside the cluster (a selected cluster object on a parent canvas is itself
+    /// a hidden preview object and is handled the same way at that level).
     /// </summary>
     private static IEnumerable<IGH_PreviewObject> SelectedHiddenPreviewObjects(GH_Document ghDoc)
     {
       foreach (var obj in ghDoc.Objects)
       {
-        if (obj is GH_Cluster cluster)
-        {
-          GH_Document? subDoc = null;
-          try
-          {
-            // Empty password returns the document for unlocked clusters; null for protected ones.
-            subDoc = cluster.Document(string.Empty);
-          }
-          catch
-          {
-            /* ignore inaccessible (e.g. password-protected) clusters */
-          }
-
-          if (subDoc != null)
-          {
-            foreach (var inner in SelectedHiddenPreviewObjects(subDoc))
-              yield return inner;
-          }
-        }
-
         if (!obj.Attributes.Selected)
           continue;
         if (obj is not IGH_PreviewObject pObj || !pObj.IsPreviewCapable || !pObj.Hidden)
